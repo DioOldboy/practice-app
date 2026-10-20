@@ -17,7 +17,7 @@ def inline_font(m):
     return f'url("data:font/woff2;base64,{data}")'
 fonts = re.sub(r'url\("(fonts/[^"]+)"\)', inline_font, fonts)
 css = (SRC / "app.css").read_text()
-js = (SRC / "strings.js").read_text() + "\n" + (SRC / "app.js").read_text()
+js = "\n".join((SRC / f).read_text() for f in ["strings.js", "import-core.js", "app.js"])
 assert "</script" not in js.lower()
 PREV.mkdir(exist_ok=True)
 (PREV / "preview.html").write_text(f"""<title>Aliki Practice App</title>

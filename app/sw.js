@@ -1,7 +1,7 @@
 /* Offline support: the app shell is cached; patient data never passes through here (it lives in IndexedDB). */
-const VERSION = "practice-v1.0.0";
+const VERSION = "practice-v1.1.0";
 const SHELL = [
-  "./", "index.html", "app.css", "fonts.css", "strings.js", "app.js", "manifest.webmanifest",
+  "./", "index.html", "app.css", "fonts.css", "config.js", "strings.js", "import-core.js", "app.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png",
   "fonts/commissioner-greek-wght-normal.woff2", "fonts/commissioner-latin-wght-normal.woff2",
   "fonts/noto-sans-greek-400-normal.woff2", "fonts/noto-sans-latin-400-normal.woff2",

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://www.gstatic.com; img-src 'self' blob: data: https://*.googleusercontent.com https://www.gstatic.com https://ssl.gstatic.com; font-src 'self'; connect-src 'self' https://www.googleapis.com https://sheets.googleapis.com https://content.googleapis.com; frame-src https://docs.google.com https://drive.google.com https://content.googleapis.com https://accounts.google.com; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <meta name="theme-color" content="#f2f5f4" media="(prefers-color-scheme: light)">
@@ -18,7 +18,9 @@
 </head>
 <body>
   <div id="app"></div>
+  <script src="config.js"></script>
   <script src="strings.js"></script>
+  <script src="import-core.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

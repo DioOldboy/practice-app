@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const APP_VERSION = "1.0.0";
+  const APP_VERSION = "1.1.0";
   const DEMO = !!window.PRACTICE_DEMO;
   const DB_NAME = DEMO ? "practice-demo" : "practice";
   const BACKUP_MAGIC = [0x41, 0x50, 0x42, 0x4b]; // "APBK"
@@ -117,6 +117,7 @@
   }
   async function dbPut(store, obj) {
     const key = store === "meta" ? obj.key : obj.id;
+    if (store !== "meta") setTimeout(markDirty, 0);
     if (!idb) { mem[store].set(key, obj); return; }
     const tx = idb.transaction(store, "readwrite");
     tx.objectStore(store).put(obj);
@@ -125,12 +126,14 @@
   }
   async function dbDel(store, keys) {
     keys = [].concat(keys);
+    if (store !== "meta") setTimeout(markDirty, 0);
     if (!idb) { keys.forEach((k) => mem[store].delete(k)); return; }
     const tx = idb.transaction(store, "readwrite");
     keys.forEach((k) => tx.objectStore(store).delete(k));
     await txDone(tx);
   }
   async function dbReplaceAll(data) {
+    setTimeout(markDirty, 0);
     if (!idb) {
       STORES.forEach((s) => mem[s].clear());
       for (const s of STORES) (data[s] || []).forEach((o) => mem[s].set(s === "meta" ? o.key : o.id, o));
@@ -262,6 +265,10 @@
     return t("rg_" + v.region) + side;
   }
   function backupBanner() {
+    if (driveReady() && S.meta.driveConnected) {
+      if (!driveNeedsAttention()) return "";
+      return html`<div class="banner">${icon("upload")}<div class="grow">${t("driveUnsaved")}</div><button class="btn" data-action="driveBackupNow">${t("driveSaveBtn")}</button></div>`;
+    }
     if (!S.patients.size) return "";
     const last = S.meta.lastBackupAt;
     if (last && Date.now() - last < BACKUP_REMIND_DAYS * 864e5) return "";
@@ -339,7 +346,7 @@
     const nq = norm(q);
     const all = [...S.patients.values()];
     const filtered = !nq ? all : all.filter((p) => {
-      const hay = norm([p.lastName, p.firstName, p.fatherName, p.phone, p.amka, p.email].join(" "));
+      const hay = norm([p.lastName, p.firstName, p.fatherName, p.phone, p.amka, p.afm, p.email].join(" "));
       return nq.split(/\s+/).every((part) => hay.includes(part));
     });
     return filtered.sort((a, b) => fullName(a).localeCompare(fullName(b), "el"));
@@ -404,7 +411,7 @@
       <main class="content noform">
         <div class="ph"><h2>${fullName(p)}</h2>${meta ? html`<div class="meta num">${meta}</div>` : ""}</div>
         ${p.allergies ? html`<div class="alert-box"><div class="k">${t("allergies")}</div><div class="v">${p.allergies}</div></div>` : ""}
-        ${factsGrid([fact(t("phone"), tel), fact(t("amka"), p.amka), fact(t("insurance"), p.insurance), fact(t("occupation"), p.occupation),
+        ${factsGrid([fact(t("phone"), tel), fact(t("amka"), p.amka), fact(t("afm"), p.afm), fact(t("insurance"), p.insurance), fact(t("occupation"), p.occupation),
           fact(t("referredBy"), p.referredBy), fact(t("email"), mail, true), fact(t("address"), p.address, true),
           fact(t("history"), p.history, true), fact(t("notes"), p.notes, true)])}
         <section class="section">
@@ -503,7 +510,8 @@
             ${field("firstName", t("firstName"), p.firstName, { required: true })}
             <div class="grid2">${field("fatherName", t("fatherName"), p.fatherName)}${field("dob", t("dob"), p.dob, { type: "date" })}</div>
             ${seg("sex", t("sex"), p.sex, [["F", t("female")], ["M", t("male")]])}
-            <div class="grid2">${field("amka", t("amka"), p.amka, { inputmode: "numeric" })}${field("insurance", t("insurance"), p.insurance, { hint: t("insuranceHint") })}</div>
+            <div class="grid2">${field("amka", t("amka"), p.amka, { inputmode: "numeric" })}${field("afm", t("afm"), p.afm, { inputmode: "numeric" })}</div>
+            ${field("insurance", t("insurance"), p.insurance, { hint: t("insuranceHint") })}
           </fieldset>
           <fieldset><legend>${t("secContact")}</legend>
             ${field("phone", t("phone"), p.phone, { type: "tel", inputmode: "tel" })}
@@ -587,7 +595,7 @@
     if (!ok) { const first = form.querySelector(".invalid input"); if (first) first.focus(); return; }
     const existing = route.id ? S.patients.get(route.id) : null;
     const p = Object.assign({}, existing || { id: uid() }, {
-      lastName: v.lastName, firstName: v.firstName, fatherName: v.fatherName, dob: v.dob, sex: v.sex || "", amka: v.amka, insurance: v.insurance,
+      lastName: v.lastName, firstName: v.firstName, fatherName: v.fatherName, dob: v.dob, sex: v.sex || "", amka: v.amka, afm: v.afm, insurance: v.insurance,
       phone: v.phone, email: v.email, address: v.address, allergies: v.allergies, history: v.history, occupation: v.occupation,
       referredBy: v.referredBy, consentDate: v.consentDate, notes: v.notes
     });
@@ -648,6 +656,7 @@
             <div class="grow"><div class="title">${l.name}</div><div class="sub">${[l.type === "hospital" ? t("locHospital") : t("locPractice"), l.address].filter(Boolean).join(" · ")}</div></div>
             <span class="chev">${icon("chev")}</span></button>`)}</div>
         </section>
+        ${driveSettings()}
         <section class="section">
           <div class="section-head"><h2>${t("backup")}</h2></div>
           <div class="card">
@@ -778,7 +787,10 @@
   const enc = new TextEncoder(), dec = new TextDecoder();
   const b64 = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
   const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-  let sessionKey = null; // CryptoKey for this app session; never stored
+  // Backup key: derived from the passphrase, kept on this phone as a non-extractable key so automatic
+  // Drive copies need no typing. It cannot be read out, only used here. Never included in backups.
+  let sessionKey = null;
+  function rememberKey(key) { sessionKey = key; setMeta("deviceKey", key).catch(() => { /* session-only */ }); }
 
   async function deriveKey(pass, salt, iterations) {
     const base = await crypto.subtle.importKey("raw", enc.encode(pass.normalize("NFC")), "PBKDF2", false, ["deriveKey"]);
@@ -817,7 +829,7 @@
           const salt = crypto.getRandomValues(new Uint8Array(16));
           const key = await deriveKey(a, salt, KDF_ITERATIONS);
           await setMeta("keyCheck", await makeKeyCheck(key, salt, KDF_ITERATIONS));
-          sessionKey = key;
+          rememberKey(key);
           done(true);
         };
         ok.addEventListener("click", submit);
@@ -836,7 +848,7 @@
         const submit = async () => {
           busy(ok, true);
           const key = await deriveKey(el.querySelector("#pp1").value, unb64(kc.salt), kc.iterations);
-          if (await verifyKey(key, kc)) { sessionKey = key; done(key); }
+          if (await verifyKey(key, kc)) { rememberKey(key); done(key); }
           else { busy(ok, false); sheetError(el, "pp1", t("ppWrong")); }
         };
         ok.addEventListener("click", submit);
@@ -872,7 +884,7 @@
       blobs.push(bytes);
       offset += bytes.length;
     }
-    const meta = (await dbAll("meta")).filter((m) => !["keyCheck", "lastBackupAt"].includes(m.key));
+    const meta = (await dbAll("meta")).filter((m) => !["keyCheck", "lastBackupAt", "deviceKey", "driveDirtyAt", "lastDriveBackupAt"].includes(m.key));
     const body = {
       format: "practice-backup", schema: 1, appVersion: APP_VERSION, createdAt: Date.now(),
       patients: await dbAll("patients"), visits: await dbAll("visits"), locations: await dbAll("locations"), meta, attachments: attMeta
@@ -937,7 +949,7 @@
     }
   }
 
-  async function restoreFlow(file) {
+  async function restoreFlow(file, extraMeta) {
     let u8, parsed;
     try { u8 = new Uint8Array(await file.arrayBuffer()); parsed = parseBackupHeader(u8); }
     catch (e) { toast(t("restoreBadFile")); return; }
@@ -963,7 +975,9 @@
     if (!sure) return;
     const key = body._key;
     const salt = unb64(h.kdf.salt);
-    const meta = (body.meta || []).concat([{ key: "keyCheck", value: await makeKeyCheck(key, salt, h.kdf.iterations) }, { key: "lastBackupAt", value: body.createdAt }]);
+    const meta = (body.meta || []).filter((m) => !Object.prototype.hasOwnProperty.call(extraMeta || {}, m.key))
+      .concat([{ key: "keyCheck", value: await makeKeyCheck(key, salt, h.kdf.iterations) }, { key: "lastBackupAt", value: body.createdAt }, { key: "deviceKey", value: key }])
+      .concat(Object.entries(extraMeta || {}).map(([k, v]) => ({ key: k, value: v })));
     await dbReplaceAll({ patients: body.patients, visits: body.visits, locations: body.locations, attachments: body.attachments, meta });
     sessionKey = key;
     thumbURLs.forEach((u) => URL.revokeObjectURL(u)); thumbURLs.clear();
@@ -1001,6 +1015,400 @@
     }
     render();
   }
+
+  /* ---------------- Google Drive: sign-in, encrypted sync, register import ----------------
+     The phone talks to Google directly. Scope is drive.file: the app sees only files it created
+     (its backup folder) and files the user picks with Google's picker (the register). */
+  const CFG = window.PRACTICE_CONFIG || {};
+  const driveReady = () => !DEMO && !!CFG.googleClientId;
+  const SCOPE = "https://www.googleapis.com/auth/drive.file";
+  const REDIRECT = location.origin + location.pathname.replace(/index\.html$/, "");
+  const FOLDER_NAME = "Ιατρείο – αντίγραφα";
+  const KEEP_BACKUPS = 30;
+  const DRIVE = "https://www.googleapis.com/drive/v3/files";
+  const SHEETS = "https://sheets.googleapis.com/v4/spreadsheets/";
+  class NeedAuth extends Error { constructor() { super("auth"); this.name = "NeedAuth"; } }
+  let token = null;
+  function ss(k, v) {
+    try {
+      if (v === undefined) return sessionStorage.getItem(k);
+      if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v);
+    } catch (e) { /* storage unavailable */ }
+    return null;
+  }
+  function loadToken() { try { const tk = JSON.parse(ss("practice.token") || "null"); if (tk && tk.exp > Date.now() + 60000) token = tk; } catch (e) { /* ignore */ } }
+  const tokenValid = () => !!(token && token.exp > Date.now() + 60000);
+  const errText = (e) => (e && e.message ? e.message : String(e));
+
+  // OAuth 2.0 token flow by full-page redirect: works the same in Chrome and in the installed app.
+  function startAuth(promptMode, pending) {
+    if (!navigator.onLine) { toast(t("driveOffline")); return; }
+    const state = uid();
+    ss("practice.oauthState", state);
+    ss("practice.pending", pending || "connect");
+    const p = new URLSearchParams({ client_id: CFG.googleClientId, redirect_uri: REDIRECT, response_type: "token", scope: SCOPE, include_granted_scopes: "true", state });
+    if (promptMode) p.set("prompt", promptMode);
+    location.assign("https://accounts.google.com/o/oauth2/v2/auth?" + p.toString());
+  }
+  function readAuthReturn() {
+    if (!location.hash || location.hash.length < 2) return null;
+    const h = new URLSearchParams(location.hash.slice(1));
+    if (!h.has("state")) return null;
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* ignore */ }
+    const expected = ss("practice.oauthState"); ss("practice.oauthState", null);
+    const pending = ss("practice.pending"); ss("practice.pending", null);
+    if (!expected || h.get("state") !== expected) return { error: "state", pending };
+    if (h.get("access_token")) {
+      if (h.get("scope") && !h.get("scope").includes("drive.file")) return { error: "scope", pending };
+      token = { value: h.get("access_token"), exp: Date.now() + (Number(h.get("expires_in")) || 3600) * 1000 };
+      ss("practice.token", JSON.stringify(token));
+      return { ok: true, pending };
+    }
+    return { error: h.get("error") || "unknown", pending };
+  }
+  async function gfetch(url, opts) {
+    if (!tokenValid()) throw new NeedAuth();
+    opts = opts || {};
+    const r = await fetch(url, Object.assign({}, opts, { headers: Object.assign({}, opts.headers || {}, { Authorization: "Bearer " + token.value }) }));
+    if (r.status === 401) { token = null; ss("practice.token", null); throw new NeedAuth(); }
+    if (!r.ok) {
+      let m = "HTTP " + r.status;
+      try { const j = await r.json(); if (j.error && j.error.message) m = j.error.message; } catch (e) { /* not json */ }
+      throw new Error(m);
+    }
+    return r;
+  }
+  async function findFolder() {
+    const q = encodeURIComponent("mimeType='application/vnd.google-apps.folder' and name='" + FOLDER_NAME + "' and trashed=false");
+    const found = await (await gfetch(DRIVE + "?q=" + q + "&fields=files(id)&spaces=drive")).json();
+    return found.files && found.files[0] ? found.files[0].id : null;
+  }
+  async function ensureFolder() {
+    const id = S.meta.driveFolderId;
+    if (id) {
+      try { const f = await (await gfetch(DRIVE + "/" + id + "?fields=id,trashed")).json(); if (!f.trashed) return id; }
+      catch (e) { if (e instanceof NeedAuth) throw e; }
+    }
+    let fid = await findFolder();
+    if (!fid) {
+      const r = await gfetch(DRIVE + "?fields=id", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: FOLDER_NAME, mimeType: "application/vnd.google-apps.folder" }) });
+      fid = (await r.json()).id;
+    }
+    await setMeta("driveFolderId", fid);
+    return fid;
+  }
+  async function driveUpload(name, bytes, folderId) {
+    const meta = { name, parents: [folderId], mimeType: "application/octet-stream", appProperties: { practiceBackup: "1" } };
+    const init = await gfetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id", {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "application/octet-stream", "X-Upload-Content-Length": String(bytes.length) },
+      body: JSON.stringify(meta)
+    });
+    const loc = init.headers.get("Location");
+    if (loc) {
+      const r = await fetch(loc, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: bytes });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return (await r.json()).id;
+    }
+    // Fallback when the upload URL is not readable: one multipart request.
+    const boundary = "practice" + uid().replace(/-/g, "");
+    const body = new Blob(["--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(meta) + "\r\n--" + boundary + "\r\nContent-Type: application/octet-stream\r\n\r\n", bytes, "\r\n--" + boundary + "--"]);
+    const r = await gfetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + boundary }, body });
+    return (await r.json()).id;
+  }
+  async function listBackups(folderId) {
+    const q = encodeURIComponent("'" + folderId + "' in parents and trashed=false");
+    const r = await (await gfetch(DRIVE + "?q=" + q + "&orderBy=createdTime desc&pageSize=100&fields=files(id,name,size,createdTime)&spaces=drive")).json();
+    return (r.files || []).filter((f) => /\.apb$/.test(f.name));
+  }
+  async function pruneBackups(folderId) {
+    const files = await listBackups(folderId);
+    for (const f of files.slice(KEEP_BACKUPS)) {
+      await gfetch(DRIVE + "/" + f.id, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trashed: true }) });
+    }
+  }
+  const backupName = (d) => "practice-backup-" + isoDate(d) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + ".apb";
+
+  /* --- automatic sync: each change marks the data dirty; 15 s later an encrypted copy goes to Drive --- */
+  let syncing = false, syncAgain = false, dirtyTimer = null, syncFailedAt = 0;
+  function markDirty() {
+    if (!driveReady() || !S.meta.driveConnected) return;
+    setMeta("driveDirtyAt", Date.now()).catch(() => {});
+    clearTimeout(dirtyTimer);
+    dirtyTimer = setTimeout(autoSync, 15000);
+  }
+  function driveNeedsAttention() {
+    if (!driveReady() || !S.meta.driveConnected || !S.meta.driveDirtyAt) return false;
+    return !tokenValid() || !sessionKey || syncFailedAt > 0 || Date.now() - S.meta.driveDirtyAt > 120000;
+  }
+  function refreshQuiet() { if (["agenda", "settings"].includes(route.view) && !document.querySelector(".scrim")) render(); }
+  async function autoSync() {
+    clearTimeout(dirtyTimer);
+    if (!driveReady() || !S.meta.driveConnected || !S.meta.driveDirtyAt || !sessionKey || !navigator.onLine) return refreshQuiet();
+    if (!tokenValid()) return refreshQuiet();
+    try { await driveBackup(true); } catch (e) { /* stays dirty; the banner offers a retry */ }
+  }
+  async function driveBackup(silent, btn) {
+    if (syncing) { syncAgain = true; return; }
+    if (!tokenValid()) { if (!silent) startAuth("", "backup"); return; }
+    const key = sessionKey || (silent ? null : await unlockKey());
+    if (!key) return;
+    syncing = true;
+    busy(btn, true);
+    const startedAt = Date.now();
+    try {
+      const { bytes, createdAt } = await buildBackup(key, S.meta.keyCheck);
+      const folder = await ensureFolder();
+      await driveUpload(backupName(new Date(createdAt)), bytes, folder);
+      await setMeta("lastDriveBackupAt", createdAt);
+      await setMeta("lastBackupAt", createdAt);
+      if (S.meta.driveDirtyAt && S.meta.driveDirtyAt <= startedAt) await setMeta("driveDirtyAt", null);
+      syncFailedAt = 0;
+      pruneBackups(folder).catch(() => { /* old copies stay; harmless */ });
+      if (!silent) toast(t("driveSaved"));
+    } catch (e) {
+      syncFailedAt = Date.now();
+      if (e instanceof NeedAuth) { if (!silent) startAuth("", "backup"); }
+      else if (!silent) toast(t("driveSaveFailed", { e: errText(e) }));
+      if (silent) throw e;
+    } finally {
+      syncing = false;
+      busy(btn, false);
+      refreshQuiet();
+      if (syncAgain) { syncAgain = false; setTimeout(autoSync, 1000); }
+    }
+  }
+  async function driveConnectFlow() {
+    if (!S.meta.keyCheck && !(await setPassphraseFlow(false))) return; // Drive copies are always encrypted
+    if (!sessionKey && !(await unlockKey())) return;
+    startAuth("consent", "connect");
+  }
+  async function driveRestoreFlow() {
+    if (!tokenValid()) return startAuth("", "restore");
+    toast(t("driveLoading"));
+    try {
+      const folder = S.meta.driveFolderId || (await findFolder());
+      const files = folder ? await listBackups(folder) : [];
+      if (!files.length) { toast(t("driveNoBackups")); return; }
+      const picked = await sheet(html`<h3>${t("driveChoose")}</h3>
+        <div class="card list">${files.slice(0, 12).map((f) => html`<button class="row" data-pick="${f.id}">
+          <div class="grow"><div class="title num">${fmtDateTime(new Date(f.createdTime).getTime())}</div><div class="sub num">${fmtBytes(Number(f.size) || 0)}</div></div><span class="chev">${icon("chev")}</span></button>`)}</div>
+        <div class="btns"><button class="btn" data-sheet-cancel>${t("cancel")}</button></div>`,
+        (el, done) => el.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => done(files.find((f) => f.id === b.dataset.pick)))));
+      if (!picked) return;
+      toast(t("driveLoading"));
+      const bytes = new Uint8Array(await (await gfetch(DRIVE + "/" + picked.id + "?alt=media")).arrayBuffer());
+      if (folder) await setMeta("driveFolderId", folder);
+      await restoreFlow(new File([bytes], picked.name), { driveFolderId: folder, driveConnected: true });
+    } catch (e) {
+      if (e instanceof NeedAuth) startAuth("", "restore"); else toast(t("driveError", { e: errText(e) }));
+    }
+  }
+
+  /* --- register: Google's picker grants access to the one spreadsheet chosen --- */
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      if (document.querySelector('script[src="' + src + '"]')) return res();
+      const s = document.createElement("script");
+      s.src = src; s.async = true; s.onload = () => res(); s.onerror = () => rej(new Error("script"));
+      document.head.appendChild(s);
+    });
+  }
+  async function pickRegister() {
+    if (!tokenValid()) return startAuth("", "pick");
+    try {
+      await loadScript("https://apis.google.com/js/api.js");
+      await new Promise((res, rej) => window.gapi.load("picker", { callback: res, onerror: () => rej(new Error("load")), timeout: 15000, ontimeout: () => rej(new Error("timeout")) }));
+      const g = window.google.picker;
+      const view = new g.DocsView(g.ViewId.SPREADSHEETS).setMode(g.DocsViewMode.LIST).setMimeTypes("application/vnd.google-apps.spreadsheet");
+      const doc = await new Promise((res) => {
+        new g.PickerBuilder().addView(view).setOAuthToken(token.value).setDeveloperKey(CFG.googleApiKey).setAppId(String(CFG.googleProjectNumber || ""))
+          .setLocale(lang).setCallback((data) => {
+            const a = data[g.Response.ACTION];
+            if (a === g.Action.PICKED) res(data[g.Response.DOCUMENTS][0]);
+            else if (a === g.Action.CANCEL) res(null);
+          }).build().setVisible(true);
+      });
+      if (!doc) return;
+      await setMeta("registerFile", { id: doc[g.Document.ID], name: doc[g.Document.NAME] });
+      render();
+      await registerUpdate();
+    } catch (e) {
+      if (e instanceof NeedAuth) startAuth("", "pick"); else toast(t("pickerFailed", { e: errText(e) }));
+    }
+  }
+  async function registerUpdate(tab) {
+    const f = S.meta.registerFile;
+    if (!f) return pickRegister();
+    if (!tokenValid()) return startAuth("", "import");
+    toast(t("importReading"));
+    try {
+      const info = await (await gfetch(SHEETS + f.id + "?fields=properties.title,sheets.properties.title")).json();
+      const tabs = (info.sheets || []).map((s) => s.properties.title);
+      const saved = S.meta.registerMap;
+      const useTab = tab || (saved && tabs.includes(saved.tab) ? saved.tab : tabs[0]);
+      const range = encodeURIComponent("'" + String(useTab).replace(/'/g, "''") + "'");
+      const vals = await (await gfetch(SHEETS + f.id + "/values/" + range + "?majorDimension=ROWS")).json();
+      startImport({ kind: "sheet", name: (info.properties && info.properties.title) || f.name, tabs, tab: useTab }, vals.values || []);
+    } catch (e) {
+      if (e instanceof NeedAuth) startAuth("", "import"); else toast(t("driveError", { e: errText(e) }));
+    }
+  }
+  async function csvImport(file) {
+    try {
+      const rows = window.PracticeImport.parseCSV(await file.text());
+      startImport({ kind: "csv", name: file.name }, rows);
+    } catch (e) { toast(t("importBadCsv")); }
+  }
+  function startImport(source, rows) {
+    if (!rows || rows.length < 2) { toast(t("importEmpty")); return; }
+    const saved = S.meta.registerMap;
+    ui.imp = { source, rows, map: window.PracticeImport.guessMap(rows[0], saved), overrides: Object.assign({}, S.meta.importOverrides || {}) };
+    if (route.view === "import") render(); else go("import", { from: "settings" });
+  }
+  function importAnalysis() {
+    const I = ui.imp;
+    return window.PracticeImport.analyze(I.rows, I.map, {
+      patients: [...S.patients.values()], visits: [...S.visits.values()], locations: [...S.locations.values()], importedRefs: S.meta.importedRefs || []
+    }, I.overrides, todayISO());
+  }
+  async function commitImport(btn) {
+    const I = ui.imp;
+    const res = importAnalysis();
+    if (!res.newVisits.length && !res.newPatients.length && !res.newLocations.length && !res.processedRefs.length) { toast(t("importNothing")); return; }
+    busy(btn, true);
+    const now = Date.now();
+    // fresh ids so repeated imports never collide
+    const idMap = new Map();
+    res.newLocations.forEach((l) => { const id = uid(); idMap.set(l.id, id); l.id = id; });
+    res.newPatients.forEach((p) => { const id = uid(); idMap.set(p.id, id); p.id = id; p.createdAt = now; p.updatedAt = now; });
+    res.newVisits.forEach((v) => { v.id = uid(); v.patientId = idMap.get(v.patientId) || v.patientId; v.locationId = idMap.get(v.locationId) || v.locationId; v.createdAt = now; v.updatedAt = now; });
+    if (idb) {
+      const tx = idb.transaction(["patients", "visits", "locations"], "readwrite");
+      res.newLocations.forEach((l) => tx.objectStore("locations").put(l));
+      res.newPatients.forEach((p) => tx.objectStore("patients").put(p));
+      res.newVisits.forEach((v) => tx.objectStore("visits").put(v));
+      await txDone(tx);
+    } else {
+      res.newLocations.forEach((l) => mem.locations.set(l.id, l));
+      res.newPatients.forEach((p) => mem.patients.set(p.id, p));
+      res.newVisits.forEach((v) => mem.visits.set(v.id, v));
+    }
+    res.newLocations.forEach((l) => S.locations.set(l.id, l));
+    res.newPatients.forEach((p) => S.patients.set(p.id, p));
+    res.newVisits.forEach((v) => S.visits.set(v.id, v));
+    await setMeta("importedRefs", (S.meta.importedRefs || []).concat(res.processedRefs));
+    await setMeta("registerMap", Object.assign({}, I.map, { tab: I.source.tab || "" }));
+    await setMeta("importOverrides", I.overrides);
+    await setMeta("lastImportAt", now);
+    markDirty();
+    askPersistence();
+    busy(btn, false);
+    toast(t("importDone", { p: res.newPatients.length, v: res.newVisits.length }));
+    ui.imp = null;
+    go("settings", {}, true);
+  }
+
+  VIEWS.import = function () {
+    const I = ui.imp;
+    if (!I) { setTimeout(() => go("settings", {}, true)); return ""; }
+    const header = I.rows[0].map((h) => String(h || "").trim()).filter(Boolean);
+    const ready = I.map.cols.name && I.map.cols.date;
+    const res = ready ? importAnalysis() : null;
+    const col = (f) => select("map_" + f, t("col_" + f), I.map.cols[f], [["", t("colNone")]].concat(header.map((h) => [h, h])));
+    const nameList = (items, kind) => {
+      const shown = items.slice(0, 40);
+      return html`<div class="card list">${shown.map((it) => html`<div class="row">
+          <div class="grow"><div class="title">${it.name}</div><div class="sub">${it.isNew ? t("imp_new") : t("imp_existing")} · ${it.count}×</div></div>
+          <button type="button" class="linkbtn" data-action="impFlip" data-key="${it.key}" data-to="${kind === "hospital" ? "patient" : "hospital"}">${kind === "hospital" ? t("imp_makePatient") : t("imp_makeHospital")}</button>
+        </div>`)}${items.length > shown.length ? html`<div class="row"><div class="sub">${t("imp_showAll", { n: items.length - shown.length })}</div></div>` : ""}</div>`;
+    };
+    const kv = (k, v) => html`<div class="kv"><span class="k">${k}</span><span class="v num">${v}</span></div>`;
+    return html`${topbar(t("importTitle"), { back: true })}
+      <main class="content noform">
+        <div class="card">${kv(t("importSource"), I.source.name)}${I.source.kind === "sheet" ? kv(t("importTab"), I.source.tab) : ""}</div>
+        ${I.source.kind === "sheet" && I.source.tabs && I.source.tabs.length > 1 ? select("imp_tab", t("importTab"), I.source.tab, I.source.tabs.map((x) => [x, x])) : ""}
+        <fieldset><legend>${t("importColumns")}</legend>
+          <div class="grid2">${col("name")}${col("date")}</div>
+          <div class="grid2">${col("ref")}${col("amount")}</div>
+          <div class="grid2">${col("afm")}${col("remarks")}</div>
+          ${seg("imp_order", t("importNameOrder"), I.map.nameOrder, [["last-first", t("orderLastFirst")], ["first-last", t("orderFirstLast")]])}
+        </fieldset>
+        ${!ready ? html`<div class="banner"><div class="grow">${t("importNeedCols")}</div></div>` : html`
+        <section class="section">
+          <div class="section-head"><h2>${t("importSummary")}</h2></div>
+          <div class="card">
+            ${kv(t("imp_newPatients"), res.newPatients.length)}${kv(t("imp_newVisits"), res.newVisits.length)}
+            ${kv(t("imp_hospitals"), res.hospitalNames.length)}${kv(t("imp_linked"), res.linked)}${kv(t("imp_hospitalOnly"), res.hospitalOnly)}
+            ${kv(t("imp_already"), res.skipped.already)}${kv(t("imp_noName"), res.skipped.noName)}${kv(t("imp_badDate"), res.skipped.badDate)}
+          </div>
+          <p class="note num">${t("imp_amountTotal", { a: res.amountTotal.toLocaleString(locale(), { minimumFractionDigits: 2 }) })}</p>
+        </section>
+        ${res.hospitalNames.length ? html`<section class="section"><div class="section-head"><h2>${t("imp_hospitals")}</h2></div>${nameList(res.hospitalNames, "hospital")}</section>` : ""}
+        ${res.patientNames.length ? html`<section class="section"><div class="section-head"><h2>${t("tabPatients")}</h2></div>${nameList(res.patientNames, "patient")}</section>` : ""}
+        <button class="btn primary block" data-action="importDo" ${res.newVisits.length || res.newPatients.length || res.newLocations.length ? "" : raw("disabled")}>${t("importDo")} · ${res.newPatients.length} / ${res.newVisits.length}</button>`}
+      </main>`;
+  };
+
+  function driveSettings() {
+    if (DEMO) return html`<section class="section"><div class="section-head"><h2>${t("drive")}</h2></div><div class="card"><div class="empty">${t("notInPreview")}</div></div></section>`;
+    if (!driveReady()) return html`<section class="section"><div class="section-head"><h2>${t("drive")}</h2></div><div class="card">${html`<div class="kv"><span class="k">${t("driveState")}</span><span class="v">${t("driveNotSetUp")}</span></div>`}</div></section>`;
+    const on = !!S.meta.driveConnected;
+    const rf = S.meta.registerFile;
+    return html`<section class="section">
+        <div class="section-head"><h2>${t("drive")}</h2></div>
+        <div class="card">
+          <div class="kv"><span class="k">${t("driveState")}</span><span class="v">${on ? t("driveOn") : t("driveOff")}</span></div>
+          ${on ? html`<div class="kv"><span class="k">${t("driveLast")}</span><span class="v num">${S.meta.lastDriveBackupAt ? fmtDateTime(S.meta.lastDriveBackupAt) : t("never")}</span></div>` : ""}
+        </div>
+        <div class="stack">
+          ${on ? html`<button class="btn primary block" data-action="driveBackupNow">${icon("upload")}${t("driveBackupNow")}</button><p class="note">${t("driveAuto")}</p>`
+            : html`<button class="btn primary block" data-action="driveConnect">${t("driveConnect")}</button><p class="note">${t("driveConnectHint")}</p>`}
+          <button class="btn block" data-action="driveRestore">${icon("download")}${t("driveRestore")}</button>
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${t("register")}</h2>${rf ? html`<button class="linkbtn" data-action="registerPick">${t("registerChange")}</button>` : ""}</div>
+        <div class="card">
+          <div class="kv"><span class="k">${t("importSource")}</span><span class="v">${rf ? rf.name : t("registerNone")}</span></div>
+          ${S.meta.lastImportAt ? html`<div class="kv"><span class="k">${t("registerLastImport")}</span><span class="v num">${fmtDateTime(S.meta.lastImportAt)}</span></div>` : ""}
+        </div>
+        <div class="stack">
+          ${rf ? html`<button class="btn primary block" data-action="registerUpdate">${t("registerUpdate")}</button>` : html`<button class="btn primary block" data-action="registerPick">${t("registerPick")}</button>`}
+          <p class="note">${t("registerHint")}</p>
+          <button class="btn block" data-action="registerCsv">${t("registerCsv")}</button>
+        </div>
+        <input type="file" id="csvInput" accept=".csv,text/csv,text/plain" hidden>
+      </section>`;
+  }
+
+  async function afterAuth(ret) {
+    if (!ret) return false;
+    if (ret.ok) {
+      if (!S.meta.driveConnected) await setMeta("driveConnected", true);
+      ss("practice.silentFailed", null);
+      const p = ret.pending || "connect";
+      if (p === "connect") { toast(t("driveConnected")); await setMeta("driveDirtyAt", Date.now()); autoSync(); }
+      else if (p === "backup") driveBackup(false);
+      else if (p === "pick") pickRegister();
+      else if (p === "import") registerUpdate();
+      else if (p === "restore") driveRestoreFlow();
+      else if (p === "silent") autoSync();
+      render();
+      return true;
+    }
+    if (ret.pending === "silent") ss("practice.silentFailed", "1");
+    else toast(t("driveSignInFailed", { e: ret.error }));
+    return true;
+  }
+  function launchSync() {
+    if (!driveReady() || !S.meta.driveConnected || !S.meta.driveDirtyAt || !navigator.onLine) return;
+    if (tokenValid()) { autoSync(); return; }
+    // quiet re-sign-in at launch, once per session, only when there are unsaved changes
+    if (sessionKey && !ss("practice.silentFailed") && ["agenda", "patients", "settings"].includes(route.view)) startAuth("none", "silent");
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && S.meta.driveDirtyAt && tokenValid()) autoSync(); });
+  window.addEventListener("online", () => { if (S.meta.driveDirtyAt) autoSync(); });
 
   /* ---------------- events ---------------- */
   const ACTIONS = {
@@ -1042,6 +1450,14 @@
     backup: (el) => backupFlow(el),
     restore: () => { const i = document.getElementById("restoreInput"); if (i) { i.value = ""; i.click(); } },
     passphrase: async () => { if (S.meta.keyCheck) { const k = await unlockKey(); if (!k) return; } await setPassphraseFlow(!!S.meta.keyCheck); render(); },
+    driveConnect: () => driveConnectFlow(),
+    driveBackupNow: (el) => { if (!navigator.onLine) return toast(t("driveOffline")); driveBackup(false, el).catch(() => {}); },
+    driveRestore: () => driveRestoreFlow(),
+    registerPick: () => pickRegister(),
+    registerUpdate: () => registerUpdate(),
+    registerCsv: () => { const i = document.getElementById("csvInput"); if (i) { i.value = ""; i.click(); } },
+    impFlip: (el) => { ui.imp.overrides[el.dataset.key] = el.dataset.to; render(); },
+    importDo: (el) => commitImport(el),
     demoReset: async () => { await seedDemo(true); toast(t("demoResetDone")); go("agenda", {}, true); }
   };
   // Keep typed visit-form values when the patient picker re-renders the form.
@@ -1065,6 +1481,10 @@
     if (el.dataset && el.dataset.action === "lang") ACTIONS.lang(el);
     if (el.id === "dayPicker" && el.value) { ui.day = el.value; render(); }
     if (el.id === "restoreInput" && el.files && el.files[0]) restoreFlow(el.files[0]);
+    if (el.id === "csvInput" && el.files && el.files[0]) csvImport(el.files[0]);
+    if (ui.imp && el.id && el.id.startsWith("map_")) { ui.imp.map.cols[el.id.slice(4)] = el.value; render(); }
+    if (ui.imp && el.name === "imp_order") { ui.imp.map.nameOrder = el.value; render(); }
+    if (ui.imp && el.id === "imp_tab") registerUpdate(el.value);
   });
   document.addEventListener("input", (e) => {
     if (e.target.id === "patientSearch") {
@@ -1128,6 +1548,8 @@
 
   /* ---------------- boot ---------------- */
   async function boot() {
+    loadToken();
+    const authReturn = driveReady() ? readAuthReturn() : null;
     try { idb = await openDB(); }
     catch (e) { idb = null; if (!DEMO) setTimeout(() => toast(t("errLoad")), 400); }
     try { await loadCaches(); } catch (e) { idb = null; await loadCaches(); }
@@ -1136,13 +1558,15 @@
       await saveLocation({ id: uid(), name: lang === "el" ? "Ιατρείο" : "Practice", type: "practice", address: "Δημητρίου Γούναρη 38Α, Αγία Παρασκευή" });
     }
     if (navigator.storage && navigator.storage.persisted) { try { persistent = await navigator.storage.persisted(); } catch (e) { /* ignore */ } }
+    if (S.meta.deviceKey && typeof CryptoKey !== "undefined" && S.meta.deviceKey instanceof CryptoKey) sessionKey = S.meta.deviceKey;
     try { history.replaceState({ route, depth: 0 }, ""); } catch (e) { /* ignore */ }
     render(true);
+    if (!(await afterAuth(authReturn))) launchSync();
     if (!DEMO && "serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
       navigator.serviceWorker.register("sw.js").catch(() => { /* offline support unavailable */ });
     }
   }
   // test hook (used by the automated checks only)
-  window.__practice = { S, norm, buildBackup, parseBackupHeader, openBackup, deriveKey, makeKeyCheck };
+  window.__practice = { S, norm, buildBackup, parseBackupHeader, openBackup, deriveKey, makeKeyCheck, startImport, setMeta, tokenState: () => ({ valid: tokenValid() }) };
   boot();
 })();
