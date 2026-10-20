@@ -1,0 +1,6 @@
+dist/
+preview/
+test-shots/
+node_modules/
+__pycache__/
+*.apb
